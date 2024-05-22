@@ -45,36 +45,170 @@ block L[PRE_COMP_BLOCKS+1];     /* Precomputed L(i) values, L[0] = L */
 block L_inv;                    /* Precomputed L/x value             */
 
 
-#define test 128
+// #define test 128
 
-int main(){
+// int main(){
     
-    ALIGN(64) unsigned char plaintext[test];
-    for (int i = 0; i < test; i++)
-    {
-        plaintext[i]=i;
-    }
+//     ALIGN(64) unsigned char plaintext[test];
+//     for (int i = 0; i < test; i++)
+//     {
+//         plaintext[i]=i;
+//     }
     
-    ALIGN(16) unsigned char tag[16 ]={ 0x00,0x01,0x02,0x03,
+//     ALIGN(16) unsigned char tag[16 ]={ 0x00,0x01,0x02,0x03,
+//                                        0x04,0x05,0x06,0x07,
+//                                        0x08,0x09,0x0a,0x0b,
+//                                        0x0c,0x0d,0x0e,0x0f};
+//     ALIGN(16) unsigned char K_1[16 ]={ 0x00,0x01,0x02,0x03,
+//                                        0x04,0x05,0x06,0x07,
+//                                        0x08,0x09,0x0a,0x0b,
+//                                        0x0c,0x0d,0x0e,0x0f};
+//     ALIGN(16) unsigned char N[16 ]={ 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0};
+
+
+//     pmac_aes_init(K_1,16);        
+
+//     PMAC(K_1, plaintext, test, tag);
+
+//     printf("\n");
+//     imprimiArreglo(16, tag);
+//     return 0;
+// }
+
+
+
+ char infoString[]= "PMAC AVX512 XTIMES";  /* Each AE implementation must have a global one */
+
+#ifndef MAX_ITER
+#define MAX_ITER 16384
+#endif
+
+int main(int argc, char **argv)
+{
+	/* Allocate locals */
+	ALIGN(64) unsigned char pt[MAX_ITER] = {0};
+	ALIGN(16) unsigned char key[16]={ 0x00,0x01,0x02,0x03,
                                        0x04,0x05,0x06,0x07,
                                        0x08,0x09,0x0a,0x0b,
                                        0x0c,0x0d,0x0e,0x0f};
-    ALIGN(16) unsigned char K_1[16 ]={ 0x00,0x01,0x02,0x03,
+
+     ALIGN(16) unsigned char tag[16 ]={ 0x00,0x01,0x02,0x03,
                                        0x04,0x05,0x06,0x07,
                                        0x08,0x09,0x0a,0x0b,
                                        0x0c,0x0d,0x0e,0x0f};
-    ALIGN(16) unsigned char N[16 ]={ 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0};
+	char outbuf[MAX_ITER*15+1024];
+	int iter_list[2048]; /* Populate w/ test lengths, -1 terminated */
+	char *outp = outbuf;
+	int iters, i, j, len;
+	double Hz,sec;
+	double ipi=0, tmpd;
+	clock_t c;
+	iter_list[0] = 64;
+	iter_list[1] = 128;
+	iter_list[2] = 256;
+	iter_list[3] = 512;
+	iter_list[4] = 1024;
+	iter_list[5] = 2048;
+	iter_list[6] = 4096;
+	iter_list[7] = 8192;
+	iter_list[8] = 16384;
+	iter_list[9] = -1;
+    /* Create file for writing data */
+	FILE *fp = NULL;
+    char str_time[25];
+	time_t tmp_time = time(NULL);
+	struct tm *tp = localtime(&tmp_time);
+	strftime(str_time, sizeof(str_time), "%F %R", tp);
+	if ((argc < 2) || (argc > 3)) {
+		printf("Usage: %s MHz [output_filename]\n", argv[0]);
+		return 0;
+	} else {
+		Hz = 1e6 * strtol(argv[1], (char **)NULL, 10);
+		if (argc == 3)
+			fp = fopen(argv[2], "w");
+	}
+
+	
+    outp += sprintf(outp, "%s ", infoString);
+
+    outp += sprintf(outp, "- Run %s\n\n",str_time);
+
+	// outp += sprintf(outp, "Context: %d bytes\n");
+    
+	printf("Starting run...\n");fflush(stdout);
 
 
-    // imprimiArreglo(test, plaintext);
+	/*
+	 * Get time for key setup
+	 */
+	iters = (int)(Hz/520);
+	do {
+	
+		c = clock();
+		for (j = 0; j < iters; j++) {
+            pmac_aes_init(key,16);        
+		}
+		c = clock() - c;
+		sec = c/(double)CLOCKS_PER_SEC;
+		tmpd = (sec * Hz) / (iters);
+		
+		if ((sec < 1.2)||(sec > 1.3))
+			iters = (int)(iters * 5.0/(4.0 * sec));
+		printf("%f\n", sec);
+	} while ((sec < 1.2) || (sec > 1.3));
+	
+	printf("key -- %.2f (%d cycles)\n",sec,(int)tmpd);fflush(stdout);
+	outp += sprintf(outp, "Key setup: %d cycles\n\n", (int)tmpd);
 
-    pmac_aes_init(K_1,16);        
+	/*
+	 * Get times over different lengths
+	 */
+	iters = (int)(Hz/1000);
+	i=0;
+	len = iter_list[0];
+	while (len >= 0) {
+	
+		do {
+		
 
-    PMAC(K_1, plaintext, test, tag);
+            PMAC(key,pt,iter_list[i],tag);
 
-    printf("\n");
-    imprimiArreglo(16, tag);
-    return 0;
+			c = clock();
+			for (j = 0; j < iters; j++) {
+                PMAC(key,pt,iter_list[i],tag);
+			}
+			c = clock() - c;
+			sec = c/(double)CLOCKS_PER_SEC;
+			tmpd = (sec * Hz) / ((double)len * iters);
+			
+			if ((sec < 1.2)||(sec > 1.3))
+				iters = (int)(iters * 5.0/(4.0 * sec));
+			
+		} while ((sec < 1.2) || (sec > 1.3));
+		
+		printf("%d -- %.2f  (%6.2f cpb)\n",len,sec,tmpd);fflush(stdout);
+		outp += sprintf(outp, "%5d  %6.2f\n", len, tmpd);
+		if (len==44) {
+			ipi += 0.05 * tmpd;
+		} else if (len==552) {
+			ipi += 0.15 * tmpd;
+		} else if (len==576) {
+			ipi += 0.2 * tmpd;
+		} else if (len==1500) {
+			ipi += 0.6 * tmpd;
+		}
+		
+		++i;
+		len = iter_list[i];
+	}
+	outp += sprintf(outp, "ipi %.2f\n", ipi);
+	if (fp) {
+        fprintf(fp, "%s", outbuf);
+        fclose(fp);
+    } else
+        fprintf(stdout, "%s", outbuf);
+
+	return ((pt[0]==12) && (pt[10]==34) && (pt[20]==56) && (pt[30]==78));
 }
 
 
@@ -103,6 +237,7 @@ static void PMAC(unsigned char *K_1, unsigned char *M, int size, unsigned char *
     Tag = _mm_setzero_si128();
     
 
+
     static union {__m512i bl512; block bl128[4]; } Offset;
     static union {__m512i bl512; block bl128[4]; } tmp;
 
@@ -123,11 +258,6 @@ static void PMAC(unsigned char *K_1, unsigned char *M, int size, unsigned char *
         
         AES_encrypt_512(plain_text[j-1], &plain_text[j-1], keys_512, 10);
 
-        // imprimiArreglo(16,(unsigned char*)&plain_text[j-1]);
-        // imprimiArreglo(16,(unsigned char*)&plain_text[j-1]+16);
-        // imprimiArreglo(16,(unsigned char*)&plain_text[j-1]+32);
-        // imprimiArreglo(16,(unsigned char*)&plain_text[j-1]+48);
-        // printf("\n");
         checksum =_mm512_xor_si512(plain_text[j-1],checksum);
         size_copy-=64;
         k+=4;
@@ -154,47 +284,17 @@ static void PMAC(unsigned char *K_1, unsigned char *M, int size, unsigned char *
         tmp.bl512 = plain_text[j-1];
 
         checksum_128=_mm_xor_si128( tmp.bl128[3] ,checksum_128);
-        
-        
-        
-
-        // imprimiArreglo(16,(unsigned char*)&plain_text[j-1]);
-        // imprimiArreglo(16,(unsigned char*)&Offset.bl512);
-        // printf("\n");
-
-        // imprimiArreglo(16,(unsigned char*)&plain_text[j-1]+16);
-        // imprimiArreglo(16,(unsigned char*)&Offset.bl512+16);
-        // printf("\n");
-
-        // imprimiArreglo(16,(unsigned char*)&plain_text[j-1]+32);        
-        // imprimiArreglo(16,(unsigned char*)&Offset.bl512+32);
-        // printf("\n");
 
         plain_text[j-1] =_mm512_xor_si512(plain_text[j-1],Offset.bl512);
 
-
-        // imprimiArreglo(16,(unsigned char*)&plain_text[j-1]);
-        // imprimiArreglo(16,(unsigned char*)&plain_text[j-1]+16);
-        // imprimiArreglo(16,(unsigned char*)&plain_text[j-1]+32);
-
         AES_encrypt_512(plain_text[j-1], &plain_text[j-1], keys_512, 10);
         
-        // imprimiArreglo(16,(unsigned char*)&plain_text[j-1]);
-        // imprimiArreglo(16,(unsigned char*)&plain_text[j-1]+16);
-        // imprimiArreglo(16,(unsigned char*)&plain_text[j-1]+32);
-        // imprimiArreglo(16,(unsigned char*)&plain_text[j-1]+48);
-
         tmp.bl512=plain_text[j-1];
         for (int l = 0; l < 3; l++){
             checksum_128=_mm_xor_si128( tmp.bl128[l] ,checksum_128);
         }
-
-        
-        // imprimiArreglo(16,(unsigned char*)&checksum_128);
         
         checksum_128=_mm_xor_si128( L_inv ,checksum_128);
-        
-        // imprimiArreglo(16,(unsigned char*)&checksum_128);
 
     }else{ 
         tmp.bl512 = plain_text[j-1];
@@ -211,22 +311,11 @@ static void PMAC(unsigned char *K_1, unsigned char *M, int size, unsigned char *
             k++;
             
         } 
-        // imprimiArreglo(16,(unsigned char*)&checksum_128);
 
 
         if (size_copy==16){
-            // imprimiArreglo(16,(unsigned char*)&tmp.bl128[0]);
-            // imprimiArreglo(16,(unsigned char*)&tmp.bl128[1]);
-            // imprimiArreglo(16,(unsigned char*)&tmp.bl128[2]);
-            // imprimiArreglo(16,(unsigned char*)&tmp.bl128[3]);
-            // printf("\n");
-            // printf("%i\n", k);
-
-            // imprimiArreglo(16,(unsigned char*)&tmp.bl128[(k%4)-1]);
             checksum_128 = _mm_xor_si128( tmp.bl128[(k%4)-1] ,checksum_128);        
-            // imprimiArreglo(16,(unsigned char*)&checksum_128[0]);
             checksum_128 = _mm_xor_si128( L_inv ,checksum_128);      
-            // imprimiArreglo(16,(unsigned char*)&checksum_128[0]);
 
         }else{
             __m128i tmp_3;
@@ -238,9 +327,6 @@ static void PMAC(unsigned char *K_1, unsigned char *M, int size, unsigned char *
             tmp_3 = _mm_load_si128((__m128i *)&tmp_2);
             checksum_128 = _mm_xor_si128( tmp_3 ,checksum_128); 
         }
-        
-       
-
 
     }
     
